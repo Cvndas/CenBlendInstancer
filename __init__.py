@@ -134,7 +134,6 @@ import os
 import time
 from mathutils import Vector
 
-h = bpy.data.texts["Helpers"].as_module()
 
 def run_instancer(context : Context, selected_object_only : bool):
     output_path = context.scene.output_directory_path
