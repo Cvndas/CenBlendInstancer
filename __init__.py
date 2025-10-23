@@ -24,13 +24,18 @@ class CenBlendInstancerPanel(Panel):
 
     def draw(self, context : Context):
         layout = self.layout
-        layout.label (text="Hello vro")
-        layout.operator("wm.print_output_path")
-        layout.prop(context.scene, "output_directory_path") # Shows a property thats defined in register
-        layout.prop(context.scene, "level_name") # Shows the property for the level name
+        col_layout = layout.column(align=False)
+        col_layout.prop(context.scene, "output_directory_path") # Shows a property thats defined in register
+        col_layout.prop(context.scene, "level_name") # Shows the property for the level name
 
-        layout.operator("wm.export_for_selected_object")
-        layout.operator("wm.export_for_all_objects")
+        col_layout.separator_spacer()
+
+        col_layout.operator("wm.export_for_selected_object")
+        col_layout.operator("wm.export_for_all_objects")
+
+        col_layout.separator_spacer()
+
+        col_layout.operator("wm.share_instances_throughout_collection")
 
 
 
@@ -47,11 +52,19 @@ class PrintOutputPath(bpy.types.Operator):
             print("Absolute output path: " + bpy.path.abspath(context.scene.output_directory_path))
 
         return {'FINISHED'}
+    
+
+class ShareInstanceTypesThroughoutCollection(bpy.types.Operator) :
+    bl_idname = "wm.share_instances_throughout_collection"
+    bl_label = "Share Instances"
+
+    def execute(self, context):
+        return share_instances()
 
 
 class ExportForSelectedObject(bpy.types.Operator):
     bl_idname = "wm.export_for_selected_object"
-    bl_label = "Export instances for the SELECTED object."
+    bl_label = "Export Instances: SELECTED"
 
     def execute(self, context):
         return run_instancer(context, True)
@@ -59,7 +72,7 @@ class ExportForSelectedObject(bpy.types.Operator):
 
 class ExportForAllObjects(bpy.types.Operator):
     bl_idname = "wm.export_for_all_objects"
-    bl_label = "Export instances for ALL objects."
+    bl_label = "Export instances: ALL"
 
     def execute(self, context):
         return run_instancer(context, False)
@@ -73,6 +86,7 @@ def register() -> None:
     bpy.utils.register_class(PrintOutputPath)
     bpy.utils.register_class(ExportForSelectedObject)
     bpy.utils.register_class(ExportForAllObjects)
+    bpy.utils.register_class(ShareInstanceTypesThroughoutCollection)
 
     # Creates the output path as a string property that lives in the .blend file.
     bpy.types.Scene.output_directory_path = bpy.props.StringProperty(
@@ -97,6 +111,7 @@ def unregister() -> None:
     bpy.utils.unregister_class(PrintOutputPath)
     bpy.utils.unregister_class(ExportForSelectedObject)
     bpy.utils.unregister_class(ExportForAllObjects)
+    bpy.utils.unregister_class(ShareInstanceTypesThroughoutCollection)
     del bpy.types.Scene.output_directory_path
     del bpy.types.Scene.level_name
 
@@ -135,6 +150,163 @@ import os
 import time
 import json
 from mathutils import Vector
+
+def popup_error(msg: str):
+    def draw(self, _):
+        self.layout.label(text=msg)
+    bpy.context.window_manager.popup_menu(draw, title="CenBlend - Instancer Error!", icon="ERROR")
+
+
+def _iter_objects_recursive(target_collection, seen_ptrs):
+    for obj in target_collection.objects:
+        pid = obj.as_pointer()
+        if pid not in seen_ptrs:
+            seen_ptrs.add(pid)
+            yield obj
+    
+    # Recursive call into all children
+    for child in target_collection.children:
+        yield from _iter_objects_recursive(child, seen_ptrs)
+
+
+def add_unique_instance_painters_to_list(collected_modifiers, host):
+    for new_mod in host.modifiers:
+
+        # Skip it if it already existed
+        mod_already_collected = False
+        for previous_mod, _ in collected_modifiers:
+            if previous_mod.name == new_mod.name:
+                mod_already_collected = True
+                mod_already_collected = True
+                break
+        if mod_already_collected:
+            continue
+
+        collected_modifiers.append((new_mod, compute_avg_edge_len(host)))
+
+
+def add_unique_vertex_group_names_to_set(collected_names, host):
+    for vertex_group in host.vertex_groups:
+        if vertex_group.name not in collected_names:
+            collected_names.add(vertex_group.name)
+
+
+def compute_avg_edge_len(target_obj):
+    if target_obj.type != "MESH":
+        print("Target object " + target_obj.name + " was not a mesh type object.")
+        return 0.0
+
+    mesh_data = target_obj.data
+
+    total_len = 0.0
+
+    if not mesh_data.edges:
+        print("Target object " + target_obj.name + "didn't have valid edges.")
+        return 0.0
+    
+    for edge in mesh_data.edges:
+        v1, v2 = mesh_data.vertices[edge.vertices[0]].co, mesh_data.vertices[edge.vertices[1]].co
+        total_len += (v2 - v1).length
+
+    number_of_edges = len(mesh_data.edges)
+
+    average_len = total_len / number_of_edges
+    print("Average len for object " + target_obj.name + " is " + str(average_len))
+
+    return average_len
+
+
+def add_all_unique_instance_painters_if_not_already_present(unique_instance_painter_modifiers, c):
+    for unique_mod, edge_len_of_original in unique_instance_painter_modifiers:
+
+        modifier_already_present: bool = False
+        for existing_mod in c.modifiers:
+            if existing_mod.name == unique_mod.name:
+                modifier_already_present = True
+                break
+            
+        if (modifier_already_present):
+            continue
+
+        
+        # Modifier did not yet exist. Let's copy it, and put it on.
+        copied_mod = c.modifiers.new(name=unique_mod.name, type=unique_mod.type)
+
+        node_tree = unique_mod.node_group
+        copied_mod.node_group = node_tree
+
+
+
+        # Copying weight paint name
+        copied_mod["Socket_10"] = unique_mod["Socket_10"]
+
+        # Copying distance min 
+        copied_mod["Socket_11"] = unique_mod["Socket_11"]
+
+        # Modifying density according to edge len
+        edge_len_of_this = compute_avg_edge_len(c)
+        copied_density = unique_mod["Socket_3"]
+        raw_difference = edge_len_of_this - edge_len_of_original
+        adjusted_difference = raw_difference / 2
+        adjusted_this_len = edge_len_of_original + adjusted_difference
+        
+        adjusted_density = copied_density * adjusted_this_len / edge_len_of_original
+        copied_mod["Socket_3"] = adjusted_density
+
+
+
+
+def add_all_unique_vertex_groups_if_not_already_present(unique_vertex_group_names, target_object):
+    existing_vertex_group_names = set()
+    for existing_vg in target_object.vertex_groups:
+        if existing_vg.name not in existing_vertex_group_names:
+            existing_vertex_group_names.add(existing_vg.name)
+
+    
+    for unique_vg in unique_vertex_group_names:
+        if unique_vg not in existing_vertex_group_names:
+            target_object.vertex_groups.new(name=unique_vg)
+            existing_vertex_group_names.add(unique_vg)
+
+    
+
+
+
+
+def share_instances():
+    err = {'CANCELLED'}
+
+    targetCollection = bpy.context.view_layer.active_layer_collection
+    if not targetCollection or not targetCollection.name.endswith("Instances"):
+        popup_error("Active collection " + targetCollection.name + " does not end with \"Instances\". Make sure you select the right collection.")
+        return err
+    
+    seen = set()
+    collection_children = [
+        c for c in _iter_objects_recursive(targetCollection.collection, seen) if c.type == "MESH"
+    ]
+
+    unique_instance_painter_modifiers = []
+    unique_vertex_group_names = set()
+
+    for c in collection_children:
+        print("Found child: " + c.name)
+        add_unique_instance_painters_to_list(unique_instance_painter_modifiers, c)
+        add_unique_vertex_group_names_to_set(unique_vertex_group_names, c)
+
+
+    for c in collection_children:
+        add_all_unique_instance_painters_if_not_already_present(unique_instance_painter_modifiers, c)
+        add_all_unique_vertex_groups_if_not_already_present(unique_vertex_group_names, c)
+
+    return {"FINISHED"}
+
+
+
+
+
+
+
 
 
 def run_instancer(context : Context, selected_object_only : bool):
