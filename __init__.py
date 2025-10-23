@@ -171,6 +171,11 @@ def _iter_objects_recursive(target_collection, seen_ptrs):
 
 def add_unique_instance_painters_to_list(collected_modifiers, host):
     for new_mod in host.modifiers:
+        if new_mod.type != 'NODES':
+            continue
+
+        if not new_mod.node_group or new_mod.node_group.name != "InstancePainter":
+            continue
 
         # Skip it if it already existed
         mod_already_collected = False
@@ -204,14 +209,16 @@ def compute_avg_edge_len(target_obj):
         print("Target object " + target_obj.name + "didn't have valid edges.")
         return 0.0
     
+    edge_count = 0
     for edge in mesh_data.edges:
         v1, v2 = mesh_data.vertices[edge.vertices[0]].co, mesh_data.vertices[edge.vertices[1]].co
         total_len += (v2 - v1).length
+        edge_count += 1
+        if edge_count > 20000:
+            break
 
-    number_of_edges = len(mesh_data.edges)
-
-    average_len = total_len / number_of_edges
-    print("Average len for object " + target_obj.name + " is " + str(average_len))
+    average_len = total_len / edge_count
+    # print("Average len for object " + target_obj.name + " is " + str(average_len))
 
     return average_len
 
@@ -231,6 +238,8 @@ def add_all_unique_instance_painters_if_not_already_present(unique_instance_pain
         
         # Modifier did not yet exist. Let's copy it, and put it on.
         copied_mod = c.modifiers.new(name=unique_mod.name, type=unique_mod.type)
+        copied_mod.show_viewport = False
+        copied_mod.show_render = False
 
         node_tree = unique_mod.node_group
         copied_mod.node_group = node_tree
@@ -276,28 +285,40 @@ def add_all_unique_vertex_groups_if_not_already_present(unique_vertex_group_name
 def share_instances():
     err = {'CANCELLED'}
 
-    targetCollection = bpy.context.view_layer.active_layer_collection
-    if not targetCollection or not targetCollection.name.endswith("Instances"):
-        popup_error("Active collection " + targetCollection.name + " does not end with \"Instances\". Make sure you select the right collection.")
-        return err
-    
-    seen = set()
-    collection_children = [
-        c for c in _iter_objects_recursive(targetCollection.collection, seen) if c.type == "MESH"
-    ]
+    old = bpy.context.preferences.edit.use_global_undo
+    bpy.context.preferences.edit.use_global_undo = False
 
-    unique_instance_painter_modifiers = []
-    unique_vertex_group_names = set()
+    try:
+        targetCollection = bpy.context.view_layer.active_layer_collection
+        if not targetCollection or not targetCollection.name.endswith("Instances"):
+            popup_error("Active collection " + targetCollection.name + " does not end with \"Instances\". Make sure you select the right collection.")
+            return err
+        
+        seen = set()
+        collection_children = [
+            c for c in _iter_objects_recursive(targetCollection.collection, seen) if c.type == "MESH"
+        ]
 
-    for c in collection_children:
-        print("Found child: " + c.name)
-        add_unique_instance_painters_to_list(unique_instance_painter_modifiers, c)
-        add_unique_vertex_group_names_to_set(unique_vertex_group_names, c)
+        unique_instance_painter_modifiers = []
+        unique_vertex_group_names = set()
 
+        for c in collection_children:
+            print("Found child: " + c.name)
+            add_unique_instance_painters_to_list(unique_instance_painter_modifiers, c)
+            add_unique_vertex_group_names_to_set(unique_vertex_group_names, c)
+            print("Gathered instance painters and vertex groups from object " + c.name)
 
-    for c in collection_children:
-        add_all_unique_instance_painters_if_not_already_present(unique_instance_painter_modifiers, c)
-        add_all_unique_vertex_groups_if_not_already_present(unique_vertex_group_names, c)
+        print("Completed gathering unique instance painters and vertex group names")
+
+        for c in collection_children:
+            add_all_unique_instance_painters_if_not_already_present(unique_instance_painter_modifiers, c)
+            add_all_unique_vertex_groups_if_not_already_present(unique_vertex_group_names, c)
+            print("Added instance painters and vertex groups to object " + c.name)
+
+        print("And we're done!")
+
+    finally:
+        bpy.context.preferences.edit.use_global_undo = old
 
     return {"FINISHED"}
 
