@@ -24,10 +24,11 @@ class CenBlendInstancerPanel(Panel):
 
     def draw(self, context : Context):
         layout = self.layout
-        layout.label (text="Hello, World!")
+        layout.label (text="Hello vro")
         layout.operator("wm.print_output_path")
         layout.prop(context.scene, "output_directory_path") # Shows a property thats defined in register
         layout.prop(context.scene, "level_name") # Shows the property for the level name
+
         layout.operator("wm.export_for_selected_object")
         layout.operator("wm.export_for_all_objects")
 
@@ -37,20 +38,20 @@ class CenBlendInstancerPanel(Panel):
 
 class PrintOutputPath(bpy.types.Operator):
     bl_idname = "wm.print_output_path"
-    bl_label = "Echo output path"
+    bl_label = "Echo absolute output path"
 
     def execute(self, context):
         if not context.scene.output_directory_path:
             print("You forgot to set the output path!")
         else:
-            print("Output path: " + context.scene.output_directory_path)
+            print("Absolute output path: " + bpy.path.abspath(context.scene.output_directory_path))
 
         return {'FINISHED'}
 
 
 class ExportForSelectedObject(bpy.types.Operator):
     bl_idname = "wm.export_for_selected_object"
-    bl_label = "Export instances for selected object."
+    bl_label = "Export instances for the SELECTED object."
 
     def execute(self, context):
         return run_instancer(context, True)
@@ -58,7 +59,7 @@ class ExportForSelectedObject(bpy.types.Operator):
 
 class ExportForAllObjects(bpy.types.Operator):
     bl_idname = "wm.export_for_all_objects"
-    bl_label = "Export instances for all objects."
+    bl_label = "Export instances for ALL objects."
 
     def execute(self, context):
         return run_instancer(context, False)
@@ -132,6 +133,7 @@ if __name__ == "__main__":
 
 import os
 import time
+import json
 from mathutils import Vector
 
 
@@ -157,7 +159,12 @@ def run_instancer(context : Context, selected_object_only : bool):
         return {'CANCELLED'}
 
 
-
+def _unique_seed(seed: int, used: set[int]) -> int:
+    s = int(seed) if isinstance(seed, (int, float)) else 0
+    while s in used:
+        s += 1
+    used.add(s)
+    return s
 
 
 def export_instances(directory_path, level_name, selected_object_only: bool) -> bool:
@@ -202,6 +209,12 @@ def export_instances(directory_path, level_name, selected_object_only: bool) -> 
             return False
 
         object_name = inst_obj.name
+
+        # Little gpt-generated hack to update seed, due to weird for loop. Why did I write such shitty code.
+        if "___used_seeds" not in locals():
+            ___used_seeds = {}
+        used_for_obj = ___used_seeds.setdefault(object_name, set())
+
         for mod in modlist:
             bpy.ops.object.select_all(action='DESELECT')
             
@@ -209,6 +222,12 @@ def export_instances(directory_path, level_name, selected_object_only: bool) -> 
             if (mod_was_active_before == False):
                 print("Modifier " + mod.name + " was inactive before. Activating it pre-dupe.")
                 mod.show_viewport = True
+
+
+            seed_key = "Socket_4"
+            current_seed = mod.get(seed_key, 0)
+            uniqueSeed = _unique_seed(current_seed, used_for_obj)
+            mod[seed_key] = uniqueSeed
                 
             mod["Socket_9"] = True # Exporting Points for this modifier
             duplicate_object = inst_obj.copy()
@@ -251,7 +270,7 @@ def export_instances(directory_path, level_name, selected_object_only: bool) -> 
                 coord += duplicate_object.location
 
             
-            h.write_vertex_coordinates_to_json(vertex_coordinates, file_path)
+            write_vertex_coordinates_to_json(vertex_coordinates, file_path)
             print("Wrote json file for object " + inst_obj.name + " and instancetype " + mod.name)
 
 
@@ -325,7 +344,7 @@ def write_vertex_coordinates_to_json(vertex_coordinates, file_path):
 
 def delete_previous_json_files(directory_path):
     for old_file in os.listdir(directory_path):
-        if old_file.endswith(".json"):
+        if old_file.endswith(".json") or old_file.endswith(".json.meta"):
             file_to_remove = os.path.join(directory_path, old_file)
             if os.path.isfile(file_to_remove):
                 os.remove(file_to_remove)
