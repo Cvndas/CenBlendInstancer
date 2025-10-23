@@ -256,7 +256,7 @@ def add_all_unique_instance_painters_if_not_already_present(unique_instance_pain
         edge_len_of_this = compute_avg_edge_len(c)
         copied_density = unique_mod["Socket_3"]
         raw_difference = edge_len_of_this - edge_len_of_original
-        adjusted_difference = raw_difference / 2
+        adjusted_difference = raw_difference / 3
         adjusted_this_len = edge_len_of_original + adjusted_difference
         
         adjusted_density = copied_density * adjusted_this_len / edge_len_of_original
